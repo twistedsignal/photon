@@ -1,0 +1,696 @@
+-- app state: presets, folders, previews, and the actions behind every button.
+const ChangeHistoryService = game:GetService("ChangeHistoryService")
+const HttpService = game:GetService("HttpService")
+const Lighting = game:GetService("Lighting")
+const ReplicatedStorage = game:GetService("ReplicatedStorage")
+const vide = require("./vide")
+const Data = require("./Data")
+const Schema = require("./Loader/Schema")
+const Codec = require("./Loader/Codec")
+const Snapshot = require("./Loader/Snapshot")
+const Template = require("./Loader/Template")
+const Builtin = require("./Presets/Builtin")
+const Capture = require("./Preview/Capture")
+const Previews = require("./Preview/Previews")
+const VERSION = require("./Version")
+
+const source = vide.source
+
+const PRESETS_KEY = "PhotonPresets"
+const FOLDERS_KEY = "PhotonFolders"
+const COLLAPSED_KEY = "PhotonCollapsed"
+const INSERT_FOLDER = "Photon"
+const MAX_NAME_LENGTH = 50
+
+-- the fixed sections around your own folders.
+const BUILTIN_FOLDER = "builtin"
+const UNSORTED_FOLDER = "unsorted"
+
+export type Preset = {
+	id: string,
+	name: string,
+	builtin: boolean,
+	data: Schema.Data,
+	-- id of the folder it's in. nil is Unsorted; built-ins are always in Built-in.
+	folder: string?,
+	created: number?,
+	updated: number?,
+}
+
+export type Folder = { id: string, name: string }
+
+-- a folder as the library shows it: fixed or yours, with the presets that match the search.
+export type Section = { id: string, name: string, custom: boolean, presets: { Preset } }
+
+export type Notice = { text: string, kind: "info" | "error" | "success" }
+
+const function builtins(): { Preset }
+	const list = {}
+	for _, builtin in Builtin do
+		table.insert(list, { id = builtin.id, name = builtin.name, builtin = true, data = builtin.data })
+	end
+	return list
+end
+
+const function trim(text: string): string
+	return string.match(text, "^%s*(.-)%s*$") :: string
+end
+
+-- presets from plugin settings, skipping anything malformed.
+const function readPresets(saved: any): { Preset }
+	const list = {}
+	if type(saved) ~= "table" then
+		return list
+	end
+	for _, entry in saved do
+		if type(entry) ~= "table" or type(entry.id) ~= "string" or type(entry.name) ~= "string" then
+			continue
+		end
+		const data = Snapshot.clean(entry.data)
+		if data then
+			table.insert(list, {
+				id = entry.id,
+				name = string.sub(entry.name, 1, MAX_NAME_LENGTH),
+				builtin = false,
+				data = data,
+				folder = if type(entry.folder) == "string" then entry.folder else nil,
+				created = tonumber(entry.created),
+				updated = tonumber(entry.updated),
+			})
+		end
+	end
+	return list
+end
+
+const function readFolders(saved: any): { Folder }
+	const list = {}
+	if type(saved) ~= "table" then
+		return list
+	end
+	for _, entry in saved do
+		if type(entry) == "table" and type(entry.id) == "string" and type(entry.name) == "string" then
+			table.insert(list, { id = entry.id, name = string.sub(entry.name, 1, MAX_NAME_LENGTH) })
+		end
+	end
+	return list
+end
+
+const function byName(a: { name: string }, b: { name: string }): boolean
+	return string.lower(a.name) < string.lower(b.name)
+end
+
+const function create(plugin: Plugin)
+	const previews = Previews.create(plugin)
+	const user = source({} :: { Preset })
+	const folders = source({} :: { Folder })
+	const collapsed = source({} :: { [string]: boolean })
+	const selectedId = source(nil :: string?)
+	const query = source("")
+	const notice = source(nil :: Notice?)
+	-- bumps whenever a preview appears or goes away.
+	const previewsVersion = source(0)
+	-- presets being previewed, and the last problem per preset.
+	const previewing = source({} :: { [string]: boolean })
+	const previewErrors = source({} :: { [string]: string })
+	const loaded = source(false)
+	local destroyed = false
+
+	const self = {}
+	const allBuiltins = builtins()
+
+	self.user = user
+	self.folders = folders
+	self.selectedId = selectedId
+	self.query = query
+	self.notice = notice
+	self.previewsVersion = previewsVersion
+	self.previewing = previewing
+	self.previewErrors = previewErrors
+	self.loaded = loaded
+
+	function self.setNotice(text: string, kind: "info" | "error" | "success")
+		const value = { text = text, kind = kind }
+		notice(value)
+		task.delay(if kind == "error" then 8 else 5, function()
+			if notice() == value then
+				notice(nil)
+			end
+		end)
+	end
+
+	-- ---------------------------------------------------------------
+	-- state
+	-- ---------------------------------------------------------------
+
+	function self.find(id: string?): Preset?
+		if id == nil then
+			return nil
+		end
+		for _, preset in allBuiltins do
+			if preset.id == id then
+				return preset
+			end
+		end
+		for _, preset in user() do
+			if preset.id == id then
+				return preset
+			end
+		end
+		return nil
+	end
+
+	function self.selected(): Preset?
+		return self.find(selectedId())
+	end
+
+	-- the library: Built-in, your folders by name, then Unsorted. while searching, only
+	-- matching presets are listed and empty folders are hidden.
+	function self.sections(): { Section }
+		const text = string.lower(query())
+		const function matches(preset: Preset): boolean
+			return text == "" or string.find(string.lower(preset.name), text, 1, true) ~= nil
+		end
+		const known: { [string]: boolean } = {}
+		const ordered = table.clone(folders())
+		table.sort(ordered, byName)
+		for _, folder in ordered do
+			known[folder.id] = true
+		end
+		const contents: { [string]: { Preset } } = { [UNSORTED_FOLDER] = {} }
+		for _, folder in ordered do
+			contents[folder.id] = {}
+		end
+		for _, preset in user() do
+			if matches(preset) then
+				const id = if preset.folder and known[preset.folder] then preset.folder else UNSORTED_FOLDER
+				table.insert(contents[id], preset)
+			end
+		end
+		const builtin = {}
+		for _, preset in allBuiltins do
+			if matches(preset) then
+				table.insert(builtin, preset)
+			end
+		end
+
+		const list: { Section } = { { id = BUILTIN_FOLDER, name = "Built-in", custom = false, presets = builtin } }
+		for _, folder in ordered do
+			const presets = contents[folder.id]
+			table.sort(presets, byName)
+			table.insert(list, { id = folder.id, name = folder.name, custom = true, presets = presets })
+		end
+		table.sort(contents[UNSORTED_FOLDER], byName)
+		table.insert(list, { id = UNSORTED_FOLDER, name = "Unsorted", custom = false, presets = contents[UNSORTED_FOLDER] })
+
+		if text ~= "" then
+			const filtered = {}
+			for _, section in list do
+				if #section.presets > 0 then
+					table.insert(filtered, section)
+				end
+			end
+			return filtered
+		end
+		return list
+	end
+
+	-- searching opens every folder so matches aren't hidden.
+	function self.isCollapsed(id: string): boolean
+		return query() == "" and collapsed()[id] == true
+	end
+
+	function self.toggleFolder(id: string)
+		const next = table.clone(collapsed())
+		next[id] = if next[id] then nil else true
+		collapsed(next)
+		task.spawn(pcall, Data.save, plugin, COLLAPSED_KEY, next)
+	end
+
+	const function persistPresets()
+		const list = {}
+		for _, preset in user() do
+			table.insert(list, {
+				id = preset.id,
+				name = preset.name,
+				data = preset.data,
+				folder = preset.folder,
+				created = preset.created,
+				updated = preset.updated,
+			})
+		end
+		task.spawn(function()
+			const ok, problem = pcall(Data.save, plugin, PRESETS_KEY, list)
+			if not ok then
+				self.setNotice(`Couldn't save your presets: {problem}`, "error")
+			end
+		end)
+	end
+
+	const function persistFolders()
+		const list = folders()
+		task.spawn(function()
+			const ok, problem = pcall(Data.save, plugin, FOLDERS_KEY, list)
+			if not ok then
+				self.setNotice(`Couldn't save your folders: {problem}`, "error")
+			end
+		end)
+	end
+
+	-- replaces one of your presets with a changed copy.
+	const function replace(id: string, change: (Preset) -> ()): Preset?
+		const list = table.clone(user())
+		for index, entry in list do
+			if entry.id == id then
+				const updated = table.clone(entry)
+				change(updated)
+				list[index] = updated
+				user(list)
+				persistPresets()
+				return updated
+			end
+		end
+		return nil
+	end
+
+	-- ---------------------------------------------------------------
+	-- names
+	-- ---------------------------------------------------------------
+
+	-- why a preset name can't be used, or nil when it's fine.
+	function self.nameProblem(name: string, except: string?): string?
+		const trimmed = trim(name)
+		if trimmed == "" then
+			return "Give the preset a name."
+		elseif #trimmed > MAX_NAME_LENGTH then
+			return `Names can be up to {MAX_NAME_LENGTH} characters.`
+		end
+		for _, preset in allBuiltins do
+			if string.lower(preset.name) == string.lower(trimmed) then
+				return `"{preset.name}" is a built-in preset. Pick another name.`
+			end
+		end
+		for _, preset in user() do
+			if preset.id ~= except and string.lower(preset.name) == string.lower(trimmed) then
+				return `You already have a preset named "{preset.name}".`
+			end
+		end
+		return nil
+	end
+
+	function self.folderProblem(name: string, except: string?): string?
+		const trimmed = trim(name)
+		if trimmed == "" then
+			return "Give the folder a name."
+		elseif #trimmed > MAX_NAME_LENGTH then
+			return `Names can be up to {MAX_NAME_LENGTH} characters.`
+		elseif string.lower(trimmed) == "built-in" or string.lower(trimmed) == "unsorted" then
+			return `"{trimmed}" is already used by Photon. Pick another name.`
+		end
+		for _, folder in folders() do
+			if folder.id ~= except and string.lower(folder.name) == string.lower(trimmed) then
+				return `You already have a folder named "{folder.name}".`
+			end
+		end
+		return nil
+	end
+
+	-- ---------------------------------------------------------------
+	-- folders
+	-- ---------------------------------------------------------------
+
+	function self.createFolder(name: string): (boolean, string?)
+		const problem = self.folderProblem(name)
+		if problem then
+			return false, problem
+		end
+		const list = table.clone(folders())
+		table.insert(list, { id = HttpService:GenerateGUID(false), name = trim(name) })
+		folders(list)
+		persistFolders()
+		return true, nil
+	end
+
+	function self.renameFolder(id: string, name: string): (boolean, string?)
+		const problem = self.folderProblem(name, id)
+		if problem then
+			return false, problem
+		end
+		const list = table.clone(folders())
+		for index, folder in list do
+			if folder.id == id then
+				list[index] = { id = id, name = trim(name) }
+			end
+		end
+		folders(list)
+		persistFolders()
+		return true, nil
+	end
+
+	-- deletes the folder; its presets move to Unsorted.
+	function self.deleteFolder(id: string)
+		const list = {}
+		for _, folder in folders() do
+			if folder.id ~= id then
+				table.insert(list, folder)
+			end
+		end
+		folders(list)
+		persistFolders()
+		const presets = table.clone(user())
+		local moved = false
+		for index, preset in presets do
+			if preset.folder == id then
+				const copy = table.clone(preset)
+				copy.folder = nil
+				presets[index] = copy
+				moved = true
+			end
+		end
+		if moved then
+			user(presets)
+			persistPresets()
+		end
+	end
+
+	function self.moveToFolder(preset: Preset, folder: string?)
+		if preset.builtin then
+			return
+		end
+		replace(preset.id, function(copy)
+			copy.folder = folder
+		end)
+	end
+
+	-- ---------------------------------------------------------------
+	-- previews
+	-- ---------------------------------------------------------------
+
+	const function setFlag(target: typeof(previewing), key: string, value: any)
+		const next = table.clone(target())
+		next[key] = value
+		target(next)
+	end
+
+	const function changed()
+		previewsVersion(previewsVersion() + 1)
+	end
+
+	-- the preset's preview images, if it has been previewed.
+	function self.preview(preset: Preset): Previews.Entry?
+		previewsVersion()
+		return previews.get(preset.id, preset.data)
+	end
+
+	-- previews the preset. data defaults to the preset's own; pass current = true to take the
+	-- picture of the place's lighting as it is, for a preset just saved from it.
+	function self.requestPreview(preset: Preset, force: boolean?, current: boolean?)
+		if previewing()[preset.id] or (not force and previews.get(preset.id, preset.data)) then
+			return
+		end
+		setFlag(previewing, preset.id, true)
+		setFlag(previewErrors, preset.id, nil)
+		task.spawn(function()
+			const large, problem = Capture.preview(if current then nil else preset.data, Previews.WIDTH, Previews.HEIGHT)
+			if destroyed then
+				if large then
+					large:Destroy()
+				end
+				return
+			end
+			setFlag(previewing, preset.id, nil)
+			if large then
+				previews.put(preset.id, preset.data, large)
+				changed()
+			else
+				setFlag(previewErrors, preset.id, problem or "Preview failed")
+				self.setNotice(problem or "Preview failed", "error")
+			end
+		end)
+	end
+
+	function self.clearPreviews()
+		const ids = {}
+		for _, preset in allBuiltins do
+			table.insert(ids, preset.id)
+		end
+		for _, preset in user() do
+			table.insert(ids, preset.id)
+		end
+		previews.clear(ids)
+		changed()
+	end
+
+	-- saved previews load in the background once the presets are known.
+	vide.effect(function()
+		const list = table.clone(allBuiltins)
+		for _, preset in user() do
+			table.insert(list, preset)
+		end
+		if not loaded() then
+			return
+		end
+		task.spawn(function()
+			for _, preset in list do
+				if destroyed then
+					return
+				end
+				if previews.get(preset.id, preset.data) == nil and previews.load(preset.id, preset.data) then
+					changed()
+				end
+			end
+		end)
+	end)
+
+	task.spawn(function()
+		const okPresets, presets = pcall(Data.load, plugin, PRESETS_KEY, {})
+		const okFolders, savedFolders = pcall(Data.load, plugin, FOLDERS_KEY, {})
+		const okCollapsed, savedCollapsed = pcall(Data.load, plugin, COLLAPSED_KEY, {})
+		if okFolders then
+			folders(readFolders(savedFolders))
+		end
+		if okCollapsed and type(savedCollapsed) == "table" then
+			const clean = {}
+			for id, value in savedCollapsed do
+				if type(id) == "string" and value == true then
+					clean[id] = true
+				end
+			end
+			collapsed(clean)
+		end
+		if okPresets then
+			user(readPresets(presets))
+		else
+			self.setNotice("Couldn't read your saved presets. Restart Studio and try again.", "error")
+		end
+		loaded(true)
+	end)
+
+	-- ---------------------------------------------------------------
+	-- actions
+	-- ---------------------------------------------------------------
+
+	-- runs a change inside an undoable recording.
+	const function undoable(name: string, change: () -> ()): (boolean, string?)
+		const recording = ChangeHistoryService:TryBeginRecording(name)
+		const ok, problem = pcall(change)
+		if recording then
+			ChangeHistoryService:FinishRecording(
+				recording,
+				if ok then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
+			)
+		elseif ok then
+			ChangeHistoryService:SetWaypoint(name)
+		end
+		return ok, if ok then nil else tostring(problem)
+	end
+
+	function self.loadPreset(preset: Preset)
+		const ok, problem = undoable(`Load lighting "{preset.name}"`, function()
+			Snapshot.apply(preset.data, Lighting, nil, true)
+		end)
+		if ok then
+			self.setNotice(`Loaded "{preset.name}". Press Ctrl+Z to undo.`, "success")
+		else
+			self.setNotice(`Couldn't load "{preset.name}": {problem}`, "error")
+		end
+	end
+
+	function self.isInserted(preset: Preset): boolean
+		const folder = ReplicatedStorage:FindFirstChild(INSERT_FOLDER)
+		const presets = if folder then folder:FindFirstChild("Presets") else nil
+		return presets ~= nil and presets:FindFirstChild(preset.name) ~= nil
+	end
+
+	-- puts the loader module in ReplicatedStorage.Photon, replacing other versions.
+	const function ensureLoader(): Instance
+		local folder = ReplicatedStorage:FindFirstChild(INSERT_FOLDER)
+		if folder == nil then
+			folder = Instance.new("Folder")
+			folder.Name = INSERT_FOLDER
+			folder.Parent = ReplicatedStorage
+		end
+		const existing = folder:FindFirstChild("Loader")
+		if existing == nil or existing:GetAttribute("PhotonVersion") ~= VERSION then
+			if existing then
+				existing.Parent = nil
+			end
+			const loader = (script.Parent :: Instance):FindFirstChild("Loader") :: Instance
+			const copy = loader:Clone()
+			copy:SetAttribute("PhotonVersion", VERSION)
+			copy.Parent = folder
+		end
+		local presets = folder:FindFirstChild("Presets")
+		if presets == nil then
+			presets = Instance.new("Folder")
+			presets.Name = "Presets"
+			presets.Parent = folder
+		end
+		return presets :: Instance
+	end
+
+	function self.updateLoader()
+		const ok, problem = undoable("Update Photon loader", function()
+			ensureLoader()
+		end)
+		if ok then
+			self.setNotice("The Photon loader in ReplicatedStorage.Photon is up to date.", "success")
+		else
+			self.setNotice(`Couldn't add the loader: {problem}`, "error")
+		end
+	end
+
+	-- adds the preset and the loader to the place. replaces a preset folder of the same name.
+	function self.insertPreset(preset: Preset)
+		local inserted: Instance? = nil
+		const ok, problem = undoable(`Insert lighting "{preset.name}"`, function()
+			const presets = ensureLoader()
+			const old = presets:FindFirstChild(preset.name)
+			if old then
+				old.Parent = nil
+			end
+			const folder = Template.toFolder(preset.data, preset.name)
+			folder.Parent = presets
+			inserted = folder
+		end)
+		if ok then
+			if inserted then
+				game:GetService("Selection"):Set({ inserted })
+			end
+			self.setNotice(
+				`Inserted "{preset.name}". Load it with require(ReplicatedStorage.Photon.Loader).load("{preset.name}").`,
+				"success"
+			)
+		else
+			self.setNotice(`Couldn't insert "{preset.name}": {problem}`, "error")
+		end
+	end
+
+	const function add(name: string, data: Schema.Data, folder: string?): Preset
+		const now = os.time()
+		const preset: Preset = {
+			id = HttpService:GenerateGUID(false),
+			name = trim(name),
+			builtin = false,
+			data = data,
+			folder = folder,
+			created = now,
+			updated = now,
+		}
+		const list = table.clone(user())
+		table.insert(list, preset)
+		user(list)
+		persistPresets()
+		selectedId(preset.id)
+		return preset
+	end
+
+	-- saves the place's current lighting as a new preset.
+	function self.savePreset(name: string, folder: string?): (boolean, string?)
+		const problem = self.nameProblem(name)
+		if problem then
+			return false, problem
+		end
+		const preset = add(name, Snapshot.capture(Lighting), folder)
+		self.requestPreview(preset, true, true)
+		self.setNotice(`Saved "{preset.name}".`, "success")
+		return true, nil
+	end
+
+	-- overwrites a preset with the place's current lighting.
+	function self.updatePreset(preset: Preset)
+		const updated = replace(preset.id, function(copy)
+			copy.data = Snapshot.capture(Lighting)
+			copy.updated = os.time()
+		end)
+		if updated then
+			self.requestPreview(updated, true, true)
+			self.setNotice(`Updated "{preset.name}" with your current lighting.`, "success")
+		end
+	end
+
+	function self.renamePreset(preset: Preset, name: string): (boolean, string?)
+		const problem = self.nameProblem(name, preset.id)
+		if problem then
+			return false, problem
+		end
+		replace(preset.id, function(copy)
+			copy.name = trim(name)
+		end)
+		return true, nil
+	end
+
+	function self.deletePreset(preset: Preset)
+		const list = {}
+		for _, entry in user() do
+			if entry.id ~= preset.id then
+				table.insert(list, entry)
+			end
+		end
+		user(list)
+		persistPresets()
+		previews.forget(preset.id)
+		if selectedId() == preset.id then
+			selectedId(nil)
+		end
+		self.setNotice(`Deleted "{preset.name}".`, "info")
+	end
+
+	function self.exportCode(preset: Preset): string
+		return Codec.encode(preset.data)
+	end
+
+	function self.decodeCode(code: string): (Schema.Data?, string?)
+		return Codec.decode(code)
+	end
+
+	-- saves a share code as a new preset.
+	function self.importCode(code: string, name: string, folder: string?): (boolean, string?)
+		const data, problem = Codec.decode(code)
+		if data == nil then
+			return false, problem
+		end
+		const nameProblem = self.nameProblem(name)
+		if nameProblem then
+			return false, nameProblem
+		end
+		const preset = add(name, data, folder)
+		self.requestPreview(preset, true)
+		self.setNotice(`Imported "{preset.name}".`, "success")
+		return true, nil
+	end
+
+	function self.destroy()
+		destroyed = true
+		previews.destroy()
+	end
+
+	return self
+end
+
+export type Store = typeof(create(nil :: any))
+
+return {
+	create = create,
+	BUILTIN_FOLDER = BUILTIN_FOLDER,
+	UNSORTED_FOLDER = UNSORTED_FOLDER,
+}

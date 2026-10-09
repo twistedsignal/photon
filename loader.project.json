@@ -1,0 +1,6 @@
+{
+    "name": "Loader",
+    "tree": {
+        "$path": "src/Loader"
+    }
+}
