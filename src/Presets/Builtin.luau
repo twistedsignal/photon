@@ -1,6 +1,7 @@
 -- presets that ship with Photon. every preset sets all Lighting properties and lists all its
 -- effects, so loading one gives the same result whatever the place had before.
 const Schema = require("../Loader/Schema")
+const Codec = require("../Loader/Codec")
 
 export type Builtin = {
 	id: string,
@@ -236,20 +237,11 @@ const presets: { Builtin } = {
 		effect("BlurEffect", { Size = 3 }),
 		correction(0, -0.1, -0.1, rgb(180, 230, 255)),
 	}),
-	preset("cartoon", "Cartoon", {
-		LightingStyle = "Soft",
-		ClockTime = 13,
-		Ambient = rgb(110, 110, 120),
-		OutdoorAmbient = rgb(170, 170, 180),
-		ShadowSoftness = 0.6,
-		EnvironmentSpecularScale = 0,
-		EnvironmentDiffuseScale = 0.5,
-	}, {
-		sky(),
-		atmosphere(0.2, 0.4, rgb(170, 210, 255), rgb(110, 160, 230), 0, 0),
-		bloom(0.3, 24, 2.2),
-		correction(0.05, 0.1, 0.35),
-	}),
+	{
+		id = "builtin:cartoon",
+		name = "Cartoon",
+		data = assert(Codec.decode("PHHa2H_JYz55B_-bQVQX6QbIev65kClJb9cyBS4qeuZApi0_XMgU2aXrmQKXVr1zIEC1bAiIOed1QAQAiniVB6n2f_z6yIUA")),
+	},
 }
 
 return presets

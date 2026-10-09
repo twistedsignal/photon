@@ -23,14 +23,15 @@ export type Previews = {
 	destroy: () -> (),
 }
 
-const function create(plugin: Plugin): Previews
+const function create(plugin: Plugin, context: (() -> string)?): Previews
 	local memory: { [string]: Entry } = {}
+	local destroyed = false
 
 	const self = {} :: Previews
 
 	-- the share code fingerprints everything that changes how a preset looks.
 	function self.key(data: Schema.Data): string
-		return Codec.encode(data)
+		return Codec.encode(data) .. "|" .. (if context then context() else "default")
 	end
 
 	const function release(entry: Entry?)
@@ -47,11 +48,18 @@ const function create(plugin: Plugin): Previews
 
 	function self.put(id: string, data: Schema.Data, large: EditableImage): Entry
 		const entry = { key = self.key(data), large = large, card = Image.fit(large, CARD_WIDTH, CARD_HEIGHT) }
+		if destroyed or entry.key ~= self.key(data) then
+			release(entry)
+			return entry
+		end
 		if memory[id] ~= entry then
 			release(memory[id])
 		end
 		memory[id] = entry
 		task.spawn(function()
+			if destroyed or memory[id] ~= entry then
+				return
+			end
 			const packed = Image.pack(large)
 			if packed then
 				pcall(Data.save, plugin, SAVED_PREFIX .. id, {
@@ -83,7 +91,15 @@ const function create(plugin: Plugin): Previews
 		if large == nil then
 			return nil
 		end
+		if saved.key ~= self.key(data) then
+			large:Destroy()
+			return nil
+		end
 		const entry = { key = saved.key, large = large, card = Image.fit(large, CARD_WIDTH, CARD_HEIGHT) }
+		if destroyed or saved.key ~= self.key(data) then
+			release(entry)
+			return nil
+		end
 		release(memory[id])
 		memory[id] = entry
 		return entry
@@ -108,6 +124,7 @@ const function create(plugin: Plugin): Previews
 	end
 
 	function self.destroy()
+		destroyed = true
 		for _, entry in memory do
 			release(entry)
 		end

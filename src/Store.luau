@@ -3,6 +3,7 @@ const ChangeHistoryService = game:GetService("ChangeHistoryService")
 const HttpService = game:GetService("HttpService")
 const Lighting = game:GetService("Lighting")
 const ReplicatedStorage = game:GetService("ReplicatedStorage")
+const Selection = game:GetService("Selection")
 const vide = require("./vide")
 const Data = require("./Data")
 const Schema = require("./Loader/Schema")
@@ -12,6 +13,8 @@ const Template = require("./Loader/Template")
 const Builtin = require("./Presets/Builtin")
 const Capture = require("./Preview/Capture")
 const Previews = require("./Preview/Previews")
+const PreviewSettings = require("./Preview/Settings")
+const PreviewModel = require("./Preview/Model")
 const VERSION = require("./Version")
 
 const source = vide.source
@@ -19,6 +22,8 @@ const source = vide.source
 const PRESETS_KEY = "PhotonPresets"
 const FOLDERS_KEY = "PhotonFolders"
 const COLLAPSED_KEY = "PhotonCollapsed"
+const SETTINGS_KEY = "PhotonPreviewSettings"
+const MODEL_KEY = "PhotonPreviewModel"
 const INSERT_FOLDER = "Photon"
 const MAX_NAME_LENGTH = 50
 
@@ -100,7 +105,16 @@ const function byName(a: { name: string }, b: { name: string }): boolean
 end
 
 const function create(plugin: Plugin)
-	const previews = Previews.create(plugin)
+	const previewSettings = source(table.clone(PreviewSettings.defaults))
+	const previewModelName = source(nil :: string?)
+	const previewModelId = source(nil :: string?)
+	const modelSaving = source(false)
+	const previewSelection = source(nil :: string?)
+	local model: Model? = nil
+	const function previewContext(): string
+		return PreviewSettings.key(previewSettings(), previewModelId())
+	end
+	const previews = Previews.create(plugin, previewContext)
 	const user = source({} :: { Preset })
 	const folders = source({} :: { Folder })
 	const collapsed = source({} :: { [string]: boolean })
@@ -127,6 +141,18 @@ const function create(plugin: Plugin)
 	self.previewing = previewing
 	self.previewErrors = previewErrors
 	self.loaded = loaded
+	self.previewSettings = previewSettings
+	self.previewModelName = previewModelName
+	self.modelSaving = modelSaving
+	self.previewSelection = previewSelection
+
+	const function selectionChanged()
+		const selected = Selection:Get()
+		const candidate = if #selected == 1 then selected[1] else nil
+		previewSelection(if candidate and (candidate:IsA("Model") or candidate:IsA("BasePart")) then candidate.Name else nil)
+	end
+	selectionChanged()
+	const selectionConnection = Selection.SelectionChanged:Connect(selectionChanged)
 
 	function self.setNotice(text: string, kind: "info" | "error" | "success")
 		const value = { text = text, kind = kind }
@@ -395,6 +421,119 @@ const function create(plugin: Plugin)
 		previewsVersion(previewsVersion() + 1)
 	end
 
+	local settingsRevision = 0
+	local savingSettings = false
+	const function persistSettings()
+		settingsRevision += 1
+		if savingSettings then
+			return
+		end
+		savingSettings = true
+		task.spawn(function()
+			repeat
+				task.wait(0.2)
+				const revision = settingsRevision
+				const ok, problem = pcall(Data.save, plugin, SETTINGS_KEY, previewSettings())
+				if not ok and not destroyed then
+					self.setNotice(`Couldn't save preview settings: {problem}`, "error")
+				end
+			until revision == settingsRevision
+			savingSettings = false
+		end)
+	end
+
+	function self.setPreviewSetting(name: string, value: any)
+		if not loaded() or PreviewSettings.defaults[name] == nil then
+			return
+		end
+		const next = table.clone(previewSettings()) :: any
+		next[name] = value
+		previewSettings(PreviewSettings.clean(next))
+		previewErrors({})
+		changed()
+		persistSettings()
+	end
+
+	function self.resetPreviewSettings()
+		if not loaded() then
+			return
+		end
+		previewSettings(table.clone(PreviewSettings.defaults))
+		previewErrors({})
+		changed()
+		persistSettings()
+	end
+
+	function self.setPreviewModel()
+		if not loaded() or modelSaving() then
+			return
+		end
+		const selected = Selection:Get()
+		if #selected ~= 1 then
+			self.setNotice("Select one Model or part in Explorer.", "error")
+			return
+		end
+		modelSaving(true)
+		task.spawn(function()
+			local candidate: Model? = nil
+			const ok, result = pcall(function()
+				const saved, decoded = PreviewModel.encode(selected[1], HttpService:GenerateGUID(false))
+				candidate = decoded
+				Data.save(plugin, MODEL_KEY, saved)
+				return saved
+			end)
+			modelSaving(false)
+			if destroyed then
+				if candidate then
+					candidate:Destroy()
+				end
+				return
+			end
+			if not ok then
+				if candidate then
+					candidate:Destroy()
+				end
+				self.setNotice(`Couldn't save the preview model: {result}`, "error")
+				return
+			end
+			if model then
+				model:Destroy()
+			end
+			model = candidate
+			previewModelName(result.name)
+			previewModelId(result.id)
+			previewErrors({})
+			changed()
+			self.setNotice(`Saved "{result.name}" as your preview model.`, "success")
+		end)
+	end
+
+	function self.clearPreviewModel()
+		if not loaded() or modelSaving() then
+			return
+		end
+		modelSaving(true)
+		task.spawn(function()
+			const ok, problem = pcall(Data.save, plugin, MODEL_KEY, false)
+			modelSaving(false)
+			if destroyed then
+				return
+			end
+			if not ok then
+				self.setNotice(`Couldn't reset the preview model: {problem}`, "error")
+				return
+			end
+			if model then
+				model:Destroy()
+			end
+			model = nil
+			previewModelName(nil)
+			previewModelId(nil)
+			previewErrors({})
+			changed()
+		end)
+	end
+
 	-- the preset's preview images, if it has been previewed.
 	function self.preview(preset: Preset): Previews.Entry?
 		previewsVersion()
@@ -404,13 +543,23 @@ const function create(plugin: Plugin)
 	-- previews the preset. data defaults to the preset's own; pass current = true to take the
 	-- picture of the place's lighting as it is, for a preset just saved from it.
 	function self.requestPreview(preset: Preset, force: boolean?, current: boolean?)
-		if previewing()[preset.id] or (not force and previews.get(preset.id, preset.data)) then
+		if not loaded() or destroyed or previewing()[preset.id] or (not force and previews.get(preset.id, preset.data)) then
 			return
 		end
+		const context = previewContext()
+		const options = table.clone(previewSettings())
+		const subject = if model then model:Clone() else nil
 		setFlag(previewing, preset.id, true)
 		setFlag(previewErrors, preset.id, nil)
 		task.spawn(function()
-			const large, problem = Capture.preview(if current then nil else preset.data, Previews.WIDTH, Previews.HEIGHT)
+			local ok, large, problem = pcall(Capture.preview, if current then nil else preset.data, Previews.WIDTH, Previews.HEIGHT, options, subject)
+			if not ok then
+				problem = tostring(large)
+				large = nil
+			end
+			if subject then
+				subject:Destroy()
+			end
 			if destroyed then
 				if large then
 					large:Destroy()
@@ -418,9 +567,18 @@ const function create(plugin: Plugin)
 				return
 			end
 			setFlag(previewing, preset.id, nil)
+			if context ~= previewContext() then
+				if large then
+					large:Destroy()
+				end
+				changed()
+				return
+			end
 			if large then
 				previews.put(preset.id, preset.data, large)
-				changed()
+				if not destroyed then
+					changed()
+				end
 			else
 				setFlag(previewErrors, preset.id, problem or "Preview failed")
 				self.setNotice(problem or "Preview failed", "error")
@@ -437,6 +595,7 @@ const function create(plugin: Plugin)
 			table.insert(ids, preset.id)
 		end
 		previews.clear(ids)
+		previewErrors({})
 		changed()
 	end
 
@@ -462,6 +621,25 @@ const function create(plugin: Plugin)
 	end)
 
 	task.spawn(function()
+		const okSettings, savedSettings = pcall(Data.load, plugin, SETTINGS_KEY, {})
+		if okSettings then
+			previewSettings(PreviewSettings.clean(savedSettings))
+		end
+		const okModel, savedModel = pcall(Data.load, plugin, MODEL_KEY, false)
+		if okModel and type(savedModel) == "table" then
+			const decoded, result = pcall(PreviewModel.decode, savedModel)
+			if decoded then
+				if destroyed then
+					result:Destroy()
+					return
+				end
+				model = result
+				previewModelName(savedModel.name or result.Name)
+				previewModelId(savedModel.id or "saved")
+			else
+				self.setNotice(`Couldn't restore the preview model: {result}`, "error")
+			end
+		end
 		const okPresets, presets = pcall(Data.load, plugin, PRESETS_KEY, {})
 		const okFolders, savedFolders = pcall(Data.load, plugin, FOLDERS_KEY, {})
 		const okCollapsed, savedCollapsed = pcall(Data.load, plugin, COLLAPSED_KEY, {})
@@ -482,7 +660,9 @@ const function create(plugin: Plugin)
 		else
 			self.setNotice("Couldn't read your saved presets. Restart Studio and try again.", "error")
 		end
-		loaded(true)
+		if not destroyed then
+			loaded(true)
+		end
 	end)
 
 	-- ---------------------------------------------------------------
@@ -611,7 +791,9 @@ const function create(plugin: Plugin)
 			return false, problem
 		end
 		const preset = add(name, Snapshot.capture(Lighting), folder)
-		self.requestPreview(preset, true, true)
+		if previewSettings().autoCapture then
+			self.requestPreview(preset, true, true)
+		end
 		self.setNotice(`Saved "{preset.name}".`, "success")
 		return true, nil
 	end
@@ -623,7 +805,9 @@ const function create(plugin: Plugin)
 			copy.updated = os.time()
 		end)
 		if updated then
-			self.requestPreview(updated, true, true)
+			if previewSettings().autoCapture then
+				self.requestPreview(updated, true, true)
+			end
 			self.setNotice(`Updated "{preset.name}" with your current lighting.`, "success")
 		end
 	end
@@ -674,7 +858,9 @@ const function create(plugin: Plugin)
 			return false, nameProblem
 		end
 		const preset = add(name, data, folder)
-		self.requestPreview(preset, true)
+		if previewSettings().autoCapture then
+			self.requestPreview(preset, true)
+		end
 		self.setNotice(`Imported "{preset.name}".`, "success")
 		return true, nil
 	end
@@ -682,6 +868,11 @@ const function create(plugin: Plugin)
 	function self.destroy()
 		destroyed = true
 		previews.destroy()
+		selectionConnection:Disconnect()
+		if model then
+			model:Destroy()
+			model = nil
+		end
 	end
 
 	return self

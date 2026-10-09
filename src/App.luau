@@ -65,7 +65,7 @@ const function App(props: Props): Frame
 		new("TextLabel")({
 			Name = "Title",
 			Position = UDim2.fromOffset(38, 0),
-			Size = UDim2.new(0.5, -40, 1, 0),
+			Size = UDim2.new(1, -240, 1, 0),
 			BackgroundTransparency = 1,
 			Text = "Photon",
 			TextXAlignment = Enum.TextXAlignment.Left,
@@ -74,6 +74,13 @@ const function App(props: Props): Frame
 			TextSize = 18,
 		}),
 	}) :: Frame
+	Button({
+		text = "Insert loader", name = "InsertLoader",
+		size = UDim2.fromOffset(102, 28),
+		anchorPoint = Vector2.new(1, 0.5),
+		position = UDim2.new(1, -96, 0.5, 0),
+		activated = store.updateLoader,
+	}).Parent = header
 
 	const tabs = new("Frame")({
 		Name = "Tabs",

@@ -24,6 +24,8 @@ wally install
 
 Click **Photon** in the Plugins tab and pick a preset. The bar at the bottom acts on it:
 
+The **Insert loader** button in the header adds or updates `ReplicatedStorage.Photon.Loader` without selecting a preset.
+
 - **Load** applies the preset to your place's Lighting. Ctrl+Z undoes it.
 - **Insert** adds the preset to `ReplicatedStorage.Photon.Presets`, with the loader module next to it, so your scripts can load it.
 - The icons on the right **save** your current Studio lighting as a new preset, **import** a code someone shared, and **export** the selected preset as a code, such as `PHEB...`.
@@ -46,6 +48,14 @@ When you pick a preset, Photon shows a picture of it taken by Roblox itself, so 
 4. cancels the recording, which puts your lighting back and leaves nothing in the undo history.
 
 Your camera and selection are restored afterwards. While this happens, Studio's viewport shows the preset for a few seconds. Previews are saved, so each preset is only previewed once. Retake one from the preview's refresh button or the card's menu.
+
+### Preview settings
+
+Settings has controls for camera distance, field of view, orbit and elevation, floor color, grid, reference props and capture settle time. Turn off **Automatic previews** to capture only when you click refresh.
+
+To use your own preview model, select a Model or part in Explorer and click **Use selection** in Settings. Photon saves a copy with Studio's native instance serializer, including meshes, unions and textures. The copy stays available across places and Studio restarts. Scripts are removed and parts are anchored. **Use default** restores the built-in scene.
+
+**Model size** fits the longest side to a chosen number of studs; **Model rotation** turns it on the baseplate. Settings also persist across places. Changing the scene or camera invalidates previews taken with the previous settings.
 
 ### What a preset contains
 
@@ -100,7 +110,7 @@ Codes are kept short by packing bits instead of writing text:
 - Changed numbers are rounded to a fixed step (0.01 for Brightness, one minute for ClockTime) and packed into as few bits as their range needs.
 - Colors take 24 bits and asset IDs are varints.
 
-Default lighting encodes to `PHEAAAAA`. The built-in presets encode to 46–65 characters.
+Default lighting encodes to `PHEAAAAA`. The built-in presets encode to 46–96 characters.
 
 Because of the rounding, an imported preset can differ from the original by less than one step. Presets you save yourself keep full precision.
 

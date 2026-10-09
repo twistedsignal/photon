@@ -11,8 +11,9 @@ local Builtin = luau.load(source, {
 	debugName = "Builtin",
 	environment = setmetatable({
 		require = function(path)
-			assert(path == "../Loader/Schema", path)
-			return Schema
+			if path == "../Loader/Schema" then return Schema end
+			assert(path == "../Loader/Codec", path)
+			return Codec
 		end,
 	}, { __index = getfenv(1) }),
 })()
@@ -33,6 +34,9 @@ for _, preset in Builtin do
 		end
 	end
 	local code = Codec.encode(preset.data)
+	if preset.id == "builtin:cartoon" then
+		assert(code == "PHHa2H_JYz55B_-bQVQX6QbIev65kClJb9cyBS4qeuZApi0_XMgU2aXrmQKXVr1zIEC1bAiIOed1QAQAiniVB6n2f_z6yIUA", "Cartoon code differs from the supplied preset")
+	end
 	local decoded = assert(Codec.decode(code))
 	assert(Codec.encode(decoded) == code, `{preset.name}: unstable code`)
 	assert(#decoded.effects == #preset.data.effects, `{preset.name}: effects lost`)

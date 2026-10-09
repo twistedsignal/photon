@@ -17,9 +17,9 @@ const Schema = require("../Loader/Schema")
 const Snapshot = require("../Loader/Snapshot")
 const Stage = require("./Stage")
 const Image = require("./Image")
+const Settings = require("./Settings")
 
 -- seconds before the first screenshot, and between screenshots.
-const SETTLE = 1.5
 const INTERVAL = 0.4
 -- two screenshots this close (average difference per channel, 0-255) count as settled.
 const STABLE_DIFFERENCE = 1.5
@@ -120,17 +120,20 @@ end
 -- stages the preset and screenshots it until the picture stops changing. returns the last shot.
 -- the cancelled recording undoes everything here except the stage: it isn't Archivable, so
 -- change history doesn't track it and it's destroyed by hand.
-const function stageAndShoot(data: Schema.Data?, camera: Camera, built: { model: Model? }): (EditableImage?, string?)
+const function stageAndShoot(data: Schema.Data?, camera: Camera, built: { model: Model? }, options: Settings.Options, previewModel: Model?): (EditableImage?, string?)
 	if data then
 		Snapshot.apply(data, Lighting, nil, true)
 	end
-	const shot = Stage.build(workspace)
+	const shot = Stage.build(workspace, options, previewModel)
 	built.model = shot.model
 	camera.CameraType = Enum.CameraType.Scriptable
 	camera.FieldOfView = shot.fieldOfView
 	camera.CFrame = shot.camera
 	frames(3)
-	task.wait(SETTLE)
+	pcall(function()
+		ContentProvider:PreloadAsync({ shot.model })
+	end)
+	task.wait(options.settleTime)
 
 	local previous: EditableImage? = nil
 	for _ = 1, MAX_SHOTS do
@@ -160,7 +163,7 @@ end
 
 -- previews data (or the place's current lighting when nil) at width x height. yields for a few
 -- seconds; concurrent calls queue up and run one at a time.
-function Capture.preview(data: Schema.Data?, width: number, height: number): (EditableImage?, string?)
+function Capture.preview(data: Schema.Data?, width: number, height: number, options: Settings.Options?, previewModel: Model?): (EditableImage?, string?)
 	if busy then
 		table.insert(waiting, coroutine.running())
 		coroutine.yield()
@@ -192,7 +195,7 @@ function Capture.preview(data: Schema.Data?, width: number, height: number): (Ed
 		Selection:Set({})
 		StarterGui.ShowDevelopmentGui = false
 		const built: { model: Model? } = {}
-		const ok, result, message = pcall(stageAndShoot, data, camera, built)
+		const ok, result, message = pcall(stageAndShoot, data, camera, built, options or Settings.defaults, previewModel)
 		if built.model then
 			built.model:Destroy()
 		end

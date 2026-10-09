@@ -6,6 +6,7 @@ const IconButton = require("./IconButton")
 const Spinner = require("./Spinner")
 const Icons = require("../Icons")
 const Store = require("../Store")
+const Automatic = require("../Preview/Automatic")
 
 const new = vide.create
 
@@ -30,27 +31,18 @@ const function PreviewPanel(props: Props): Frame
 		return if preset then store.preview(preset) else nil
 	end
 
-	-- previews the selected preset the first time it's picked.
-	vide.effect(function()
-		const preset = store.selected()
-		if preset == nil or not store.loaded() then
-			return
-		end
-		if vide.untrack(entry) == nil and store.previewErrors()[preset.id] == nil then
-			store.requestPreview(preset)
-		end
-	end)
+	Automatic(store)
 
 	const message = function(): string
 		const preset = store.selected()
 		if preset == nil then
 			return "Pick a preset to preview it."
 		elseif busy() then
-			return if entry() then "" else "Previewing… Studio's viewport shows the preset for a few seconds."
+			return if entry() then "" else "Taking preview…"
 		elseif problem() then
 			return problem() :: string
 		end
-		return ""
+		return if entry() == nil then "Click refresh to capture a preview." else ""
 	end
 
 	return new("Frame")({

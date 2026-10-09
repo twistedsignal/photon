@@ -1,8 +1,12 @@
 -- selene: allow(mixed_table)
--- the loader in the current place, saved previews, and about.
+-- Compact preview controls, saved across places.
 const vide = require("../vide")
 const Theme = require("../components/Theme")
 const Button = require("../components/Button")
+const SliderSetting = require("../components/SliderSetting")
+const ToggleSetting = require("../components/ToggleSetting")
+const ColorSetting = require("../components/ColorSetting")
+const BaseSetting = require("../components/BaseSetting")
 const Store = require("../Store")
 
 const new = vide.create
@@ -29,35 +33,13 @@ const function heading(text: string, order: number): TextLabel
 	}) :: TextLabel
 end
 
-const function paragraph(text: string, order: number): TextLabel
-	return new("TextLabel")({
-		Size = UDim2.fromScale(1, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		LayoutOrder = order,
-		BackgroundTransparency = 1,
-		Text = text,
-		TextWrapped = true,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = Theme.MUTED,
-		Font = Enum.Font.SourceSans,
-		TextSize = 15,
-
-		new("UIPadding")({
-			PaddingLeft = UDim.new(0, 8),
-			PaddingRight = UDim.new(0, 8),
-			PaddingTop = UDim.new(0, 4),
-			PaddingBottom = UDim.new(0, 4),
-		}),
-	}) :: TextLabel
-end
-
 -- a row of buttons side by side.
-const function actions(order: number, buttons: { { text: string, activated: () -> (), variant: any? } }): Frame
+const function actions(order: number, buttons: { { text: string | () -> string, activated: () -> (), enabled: (() -> boolean)? } }): Frame
 	const children = {}
 	for index, button in buttons do
 		table.insert(children, Button({
 			text = button.text,
-			variant = button.variant,
+			enabled = button.enabled,
 			layoutOrder = index,
 			size = UDim2.new(1 / #buttons, -6, 1, 0),
 			activated = button.activated,
@@ -87,6 +69,32 @@ const function SettingsPage(props: Props): ScrollingFrame
 		return order
 	end
 
+	const function toggle(name: string, key: string, description: string?): Frame
+		return ToggleSetting({
+			name = name, index = nextOrder(), description = description,
+			value = function() return (store.previewSettings() :: any)[key] end,
+			onChange = function(value) store.setPreviewSetting(key, value) end,
+		})
+	end
+	const function slider(name: string, key: string, min: number, max: number, step: number, description: string?): Frame
+		return SliderSetting({
+			name = name, index = nextOrder(), min = min, max = max, step = step,
+			description = description,
+			value = function() return (store.previewSettings() :: any)[key] end,
+			onChange = function(value) store.setPreviewSetting(key, value) end,
+		})
+	end
+	const modelRow = BaseSetting({ name = "Saved model", index = nextOrder(), labelWidth = 0.36 })
+	new("TextLabel")({
+		Name = "ModelName", Parent = modelRow,
+		Position = UDim2.fromScale(0.36, 0), Size = UDim2.fromScale(0.64, 1),
+		BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Text = function() return store.previewModelName() or "Default scene" end,
+		TextColor3 = Theme.TEXT, Font = Enum.Font.SourceSans, TextSize = 15,
+		new("UIPadding")({ PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 8) }),
+	})
+
 	return new("ScrollingFrame")({
 		Name = "SettingsPage",
 		Position = UDim2.fromOffset(10, 0),
@@ -98,50 +106,68 @@ const function SettingsPage(props: Props): ScrollingFrame
 		CanvasSize = UDim2.new(),
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
-
 		new("UIListLayout")({ SortOrder = Enum.SortOrder.LayoutOrder }),
+		new("UIPadding")({ PaddingBottom = UDim.new(0, 12) }),
 
-		heading("This place", nextOrder()),
-		paragraph(
-			"Insert adds a preset to ReplicatedStorage.Photon.Presets along with the Loader module, so scripts can "
-				.. 'load it with require(ReplicatedStorage.Photon.Loader).load("Name", TweenInfo.new(2)).',
-			nextOrder()
-		),
+		heading("Preview model", 0),
+		modelRow,
 		actions(nextOrder(), {
-			{ text = "Add or update the loader", activated = store.updateLoader },
+			{
+				text = function() return if store.modelSaving() then "Saving…" else "Use selection" end,
+				enabled = function() return store.loaded() and not store.modelSaving() and store.previewSelection() ~= nil end,
+				activated = store.setPreviewModel,
+			},
+			{
+				text = "Use default",
+				enabled = function() return store.loaded() and not store.modelSaving() and store.previewModelName() ~= nil end,
+				activated = store.clearPreviewModel,
+			},
 		}),
+		new("TextLabel")({
+			Name = "SelectionHint", LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 24),
+			BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+			Text = function()
+				const selected = store.previewSelection()
+				return if selected then `  Selected: {selected}` else "  Select in Explorer. Saved across places."
+			end,
+			TextTruncate = Enum.TextTruncate.AtEnd, TextColor3 = Theme.SUBTLE,
+			Font = Enum.Font.SourceSans, TextSize = 13,
+		}),
+		slider("Model size", "modelSize", 4, 40, 1, "Longest side in studs. Applies to your saved model."),
+		slider("Model rotation", "modelRotation", -180, 180, 5, "Turns your saved model in degrees."),
 
-		heading("Previews", nextOrder()),
-		paragraph(
-			"Previews are taken by Roblox itself on a test baseplate far from your map, then everything is put "
-				.. "back. They're saved, so each preset is only previewed once. Clear them to take them again.",
-			nextOrder()
-		),
+		heading("Camera", nextOrder()),
+		slider("Distance", "cameraDistance", 0.5, 3, 0.1, "Multiplier of the fitted camera distance. Lower values zoom in."),
+		slider("Field of view", "fieldOfView", 25, 90, 1),
+		slider("Orbit angle", "cameraYaw", -180, 180, 5),
+		slider("Elevation", "cameraElevation", 0, 75, 1),
+
+		heading("Baseplate", nextOrder()),
+		ColorSetting({
+			name = "Floor color", index = nextOrder(),
+			value = function() return store.previewSettings().floorColor end,
+			onChange = function(value) store.setPreviewSetting("floorColor", value) end,
+		}),
+		toggle("Grid", "grid"),
+		toggle("Reference props", "referenceProps", "Material spheres and shadow props alongside the preview model."),
+
+		heading("Capture", nextOrder()),
+		toggle("Automatic previews", "autoCapture", "Capture missing previews when you select, save or import a preset."),
+		slider("Settle time", "settleTime", 0.5, 5, 0.5, "Seconds to wait before taking screenshots. Increase if lighting loads slowly."),
 		actions(nextOrder(), {
-			{ text = "Clear saved previews", activated = function()
+			{ text = "Clear previews", activated = function()
 				store.clearPreviews()
-				store.setNotice("Cleared the saved previews.", "info")
+				store.setNotice("Saved previews cleared.", "info")
 			end },
+			{ text = "Reset settings", activated = store.resetPreviewSettings },
 		}),
-
-		heading("Library", nextOrder()),
-		paragraph(
-			"Your presets and folders are saved with your Studio settings, so they're there in every place you open.",
-			nextOrder()
-		),
 
 		new("TextLabel")({
-			Name = "About",
-			Size = UDim2.new(1, 0, 0, 56),
-			LayoutOrder = nextOrder(),
+			Name = "About", Size = UDim2.new(1, 0, 0, 36), LayoutOrder = nextOrder(),
 			BackgroundTransparency = 1,
-			Text = `Photon v{props.pluginVersion} · MIT License · Twisted Signal\ngithub.com/twistedsignal/photon`,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextColor3 = Theme.SUBTLE,
-			Font = Enum.Font.SourceSans,
-			TextSize = 14,
-
-			new("UIPadding")({ PaddingLeft = UDim.new(0, 8), PaddingTop = UDim.new(0, 12) }),
+			Text = `  Photon v{props.pluginVersion} · Twisted Signal · MIT`,
+			TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = Theme.SUBTLE,
+			Font = Enum.Font.SourceSans, TextSize = 13,
 		}),
 	}) :: ScrollingFrame
 end

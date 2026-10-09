@@ -10,7 +10,7 @@ export type Shot = {
 
 -- far from most maps, at ground level so Atmosphere's height falloff looks normal.
 const ORIGIN = Vector3.new(0, 0, 40000)
-const FIELD_OF_VIEW = 50
+const Settings = require("./Settings")
 const GRID_TEXTURE = "rbxassetid://6372755229"
 
 const function part(parent: Instance, props: { [string]: any }): BasePart
@@ -27,14 +27,17 @@ const function part(parent: Instance, props: { [string]: any }): BasePart
 end
 
 -- the default Baseplate template's floor.
-const function baseplate(parent: Instance)
+const function baseplate(parent: Instance, options: Settings.Options)
 	const floor = part(parent, {
 		Name = "Baseplate",
 		Size = Vector3.new(2048, 16, 2048),
 		CFrame = CFrame.new(ORIGIN - Vector3.new(0, 8, 0)),
-		Color = Color3.fromRGB(91, 91, 91),
+		Color = Color3.fromHex(options.floorColor),
 		Material = Enum.Material.Plastic,
 	})
+	if not options.grid then
+		return
+	end
 	const grid = Instance.new("Texture")
 	grid.Texture = GRID_TEXTURE
 	grid.Face = Enum.NormalId.Top
@@ -112,18 +115,70 @@ end
 
 -- builds the scene inside container and returns where the camera should look from.
 -- the camera looks away from the place's own map, with the horizon in the top third.
-function Stage.build(container: Instance): Shot
+function Stage.build(container: Instance, options: Settings.Options?, previewModel: Model?): Shot
+	const settings = options or Settings.defaults
 	const model = Instance.new("Model")
 	model.Name = "PhotonStage"
 	model.Archivable = false
-	baseplate(model)
-	reference(model)
-	model.Parent = container
-	return {
-		model = model,
-		camera = CFrame.lookAt(ORIGIN + Vector3.new(0, 6, -15), ORIGIN + Vector3.new(0, 2.6, 6)),
-		fieldOfView = FIELD_OF_VIEW,
-	}
+	const ok, shot = pcall(function()
+		const scene = Instance.new("Model")
+		scene.Name = "Subject"
+		scene.Parent = model
+		if previewModel then
+			const subject = previewModel:Clone()
+			subject.Parent = scene
+			const _, size = subject:GetBoundingBox()
+			subject:ScaleTo(subject:GetScale() * settings.modelSize / math.max(size.X, size.Y, size.Z, 0.01))
+			subject:PivotTo(CFrame.Angles(0, math.rad(settings.modelRotation), 0) * subject:GetPivot())
+			const bounds, scaled = subject:GetBoundingBox()
+			subject:PivotTo(CFrame.new(ORIGIN - bounds.Position + Vector3.new(0, scaled.Y / 2, 0)) * subject:GetPivot())
+			if settings.referenceProps then
+				const props = Instance.new("Model")
+				props.Name = "ReferenceProps"
+				props.Parent = scene
+				reference(props)
+				props:PivotTo(CFrame.new(0, 0, scaled.Z / 2 + 8) * props:GetPivot())
+			end
+		elseif settings.referenceProps then
+			reference(scene)
+		else
+			figure(scene, ORIGIN)
+		end
+		const bounds, size = scene:GetBoundingBox()
+		const target = bounds.Position
+		const yaw = math.rad(settings.cameraYaw)
+		const pitch = math.rad(settings.cameraElevation)
+		const direction = Vector3.new(math.sin(yaw) * math.cos(pitch), math.sin(pitch), -math.cos(yaw) * math.cos(pitch))
+		const view = CFrame.lookAt(Vector3.zero, -direction)
+		const vertical = math.tan(math.rad(settings.fieldOfView / 2))
+		const horizontal = vertical * 16 / 9
+		local fitted = 12
+		for x = -1, 1, 2 do
+			for y = -1, 1, 2 do
+				for z = -1, 1, 2 do
+					const corner = view:VectorToObjectSpace(bounds:VectorToWorldSpace(size * Vector3.new(x, y, z) / 2))
+					fitted = math.max(fitted, math.abs(corner.X) / horizontal + corner.Z, math.abs(corner.Y) / vertical + corner.Z)
+				end
+			end
+		end
+		const offset = direction * fitted * 1.1 * settings.cameraDistance
+		baseplate(model, settings)
+		-- Exclude the whole temporary tree from change history.
+		for _, instance in model:GetDescendants() do
+			instance.Archivable = false
+		end
+		model.Parent = container
+		return {
+			model = model,
+			camera = CFrame.lookAt(target + offset, target),
+			fieldOfView = settings.fieldOfView,
+		}
+	end)
+	if not ok then
+		model:Destroy()
+		error(shot, 0)
+	end
+	return shot
 end
 
 return Stage
