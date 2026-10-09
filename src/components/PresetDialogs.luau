@@ -6,6 +6,7 @@ const Modal = require("./Modal")
 const CodeBox = require("./CodeBox")
 const Dropdown = require("./Dropdown")
 const Store = require("../Store")
+const ParentPicker = require("./ParentPicker")
 
 const new = vide.create
 const source = vide.source
@@ -255,21 +256,44 @@ function PresetDialogs.deleteFolder(store: Store.Store, folder: Store.Folder)
 	)
 end
 
--- inserts the preset, asking first if the place already has one with that name.
+-- Parent selection also controls replacement, so no fixed directory is required.
 function PresetDialogs.insert(store: Store.Store, preset: Preset)
-	if not store.isInserted(preset) then
-		store.insertPreset(preset)
-		return
-	end
-	confirm(
-		"Replace inserted preset",
-		`ReplicatedStorage.Photon.Presets already has "{preset.name}". Replace it with this version?`,
-		"Replace",
-		"accent",
-		function()
-			store.insertPreset(preset)
-		end
-	)
+	const parent = source(store.insertionParent())
+	const problem = source("")
+	Modal.open({
+		title = `Insert "{preset.name}"`, height = 250,
+		buttons = {
+			{ text = "Cancel", activated = function(close) close() end },
+			{ text = function() return if store.isInserted(preset, parent()) then "Replace" else "Insert" end,
+				variant = "accent", activated = function(close)
+					const ok, message = store.insertPreset(preset, parent())
+					if ok then
+						close()
+					else
+						problem(message or "Couldn't insert the preset.")
+					end
+				end,
+			},
+		},
+		body = function()
+			return new("Frame")({
+				BackgroundTransparency = 1,
+				new("UIListLayout")({ SortOrder = Enum.SortOrder.LayoutOrder }),
+				ParentPicker.rows(parent, problem, 1),
+				new("TextLabel")({
+					LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1,
+					Text = function() return if store.isInserted(preset, parent()) then "An existing preset will be replaced." else "Creates an editable preset Folder." end,
+					TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+					TextColor3 = Theme.MUTED, Font = Enum.Font.SourceSans, TextSize = 14,
+				}),
+				new("TextLabel")({
+					LayoutOrder = 4, Size = UDim2.new(1, 0, 0, 36), BackgroundTransparency = 1,
+					Text = problem, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+					TextColor3 = Theme.RED, Font = Enum.Font.SourceSans, TextSize = 14,
+				}),
+			}) :: Frame
+		end,
+	})
 end
 
 function PresetDialogs.export(store: Store.Store, preset: Preset)

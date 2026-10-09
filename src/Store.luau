@@ -10,6 +10,7 @@ const Schema = require("./Loader/Schema")
 const Codec = require("./Loader/Codec")
 const Snapshot = require("./Loader/Snapshot")
 const Template = require("./Loader/Template")
+const LoaderBuilder = require("./LoaderBuilder")
 const Builtin = require("./Presets/Builtin")
 const Capture = require("./Preview/Capture")
 const Previews = require("./Preview/Previews")
@@ -24,7 +25,6 @@ const FOLDERS_KEY = "PhotonFolders"
 const COLLAPSED_KEY = "PhotonCollapsed"
 const SETTINGS_KEY = "PhotonPreviewSettings"
 const MODEL_KEY = "PhotonPreviewModel"
-const INSERT_FOLDER = "Photon"
 const MAX_NAME_LENGTH = 50
 
 -- the fixed sections around your own folders.
@@ -126,6 +126,8 @@ const function create(plugin: Plugin)
 	-- presets being previewed, and the last problem per preset.
 	const previewing = source({} :: { [string]: boolean })
 	const previewErrors = source({} :: { [string]: string })
+	const loaderOptions = source(LoaderBuilder.defaults())
+	const insertionParent = source(ReplicatedStorage :: Instance)
 	const loaded = source(false)
 	local destroyed = false
 
@@ -141,6 +143,8 @@ const function create(plugin: Plugin)
 	self.previewing = previewing
 	self.previewErrors = previewErrors
 	self.loaded = loaded
+	self.loaderOptions = loaderOptions
+	self.insertionParent = insertionParent
 	self.previewSettings = previewSettings
 	self.previewModelName = previewModelName
 	self.modelSaving = modelSaving
@@ -695,74 +699,83 @@ const function create(plugin: Plugin)
 		end
 	end
 
-	function self.isInserted(preset: Preset): boolean
-		const folder = ReplicatedStorage:FindFirstChild(INSERT_FOLDER)
-		const presets = if folder then folder:FindFirstChild("Presets") else nil
-		return presets ~= nil and presets:FindFirstChild(preset.name) ~= nil
+	function self.isInserted(preset: Preset, parent: Instance?): boolean
+		const existing = (parent or insertionParent()):FindFirstChild(preset.name)
+		return existing ~= nil and Template.isPreset(existing)
 	end
 
-	-- puts the loader module in ReplicatedStorage.Photon, replacing other versions.
-	const function ensureLoader(): Instance
-		local folder = ReplicatedStorage:FindFirstChild(INSERT_FOLDER)
-		if folder == nil then
-			folder = Instance.new("Folder")
-			folder.Name = INSERT_FOLDER
-			folder.Parent = ReplicatedStorage
+	const function parentProblem(parent: Instance): string?
+		if parent ~= game and not parent:IsDescendantOf(game) then
+			return "Choose a parent that is still in the game."
 		end
-		const existing = folder:FindFirstChild("Loader")
-		if existing == nil or existing:GetAttribute("PhotonVersion") ~= VERSION then
-			if existing then
-				existing.Parent = nil
-			end
-			const loader = (script.Parent :: Instance):FindFirstChild("Loader") :: Instance
-			const copy = loader:Clone()
-			copy:SetAttribute("PhotonVersion", VERSION)
-			copy.Parent = folder
-		end
-		local presets = folder:FindFirstChild("Presets")
-		if presets == nil then
-			presets = Instance.new("Folder")
-			presets.Name = "Presets"
-			presets.Parent = folder
-		end
-		return presets :: Instance
+		return nil
 	end
 
-	function self.updateLoader()
-		const ok, problem = undoable("Update Photon loader", function()
-			ensureLoader()
+	function self.insertLoader(options: LoaderBuilder.Options, parent: Instance, name: string): (boolean, string?)
+		const trimmed = trim(name)
+		const problem = parentProblem(parent) or LoaderBuilder.problem(options)
+		if problem then
+			return false, problem
+		end
+		if trimmed == "" or #trimmed > 100 then
+			return false, "Use a module name between 1 and 100 characters."
+		end
+		if parent:FindFirstChild(trimmed) then
+			return false, `"{trimmed}" already exists here. Choose another name.`
+		end
+		const generated, code = pcall(LoaderBuilder.generate, options)
+		if not generated then
+			return false, tostring(code)
+		end
+		local inserted: ModuleScript? = nil
+		const ok, message = undoable("Insert Photon loader", function()
+			const module = Instance.new("ModuleScript")
+			module.Name = trimmed
+			module.Source = code
+			module:SetAttribute("PhotonVersion", VERSION)
+			module:SetAttribute("PhotonLoaderOptions", HttpService:JSONEncode(LoaderBuilder.clean(options)))
+			module.Parent = parent
+			inserted = module
 		end)
 		if ok then
-			self.setNotice("The Photon loader in ReplicatedStorage.Photon is up to date.", "success")
-		else
-			self.setNotice(`Couldn't add the loader: {problem}`, "error")
+			loaderOptions(LoaderBuilder.clean(options))
+			insertionParent(parent)
+			if inserted then
+				Selection:Set({ inserted })
+			end
+			self.setNotice(`Inserted "{trimmed}" in {parent:GetFullName()}.`, "success")
 		end
+		return ok, message
 	end
 
-	-- adds the preset and the loader to the place. replaces a preset folder of the same name.
-	function self.insertPreset(preset: Preset)
+	-- Insert the editable preset in the chosen parent, without creating a loader or folders.
+	function self.insertPreset(preset: Preset, parent: Instance?): (boolean, string?)
+		const destination = parent or insertionParent()
+		const problem = parentProblem(destination)
+		if problem then
+			return false, problem
+		end
+		const old = destination:FindFirstChild(preset.name)
+		if old and not Template.isPreset(old) then
+			return false, `An object named "{preset.name}" already exists here.`
+		end
 		local inserted: Instance? = nil
-		const ok, problem = undoable(`Insert lighting "{preset.name}"`, function()
-			const presets = ensureLoader()
-			const old = presets:FindFirstChild(preset.name)
+		const ok, message = undoable(`Insert lighting "{preset.name}"`, function()
 			if old then
 				old.Parent = nil
 			end
 			const folder = Template.toFolder(preset.data, preset.name)
-			folder.Parent = presets
+			folder.Parent = destination
 			inserted = folder
 		end)
 		if ok then
+			insertionParent(destination)
 			if inserted then
-				game:GetService("Selection"):Set({ inserted })
+				Selection:Set({ inserted })
 			end
-			self.setNotice(
-				`Inserted "{preset.name}". Load it with require(ReplicatedStorage.Photon.Loader).load("{preset.name}").`,
-				"success"
-			)
-		else
-			self.setNotice(`Couldn't insert "{preset.name}": {problem}`, "error")
+			self.setNotice(`Inserted "{preset.name}" in {destination:GetFullName()}.`, "success")
 		end
+		return ok, message
 	end
 
 	const function add(name: string, data: Schema.Data, folder: string?): Preset

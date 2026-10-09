@@ -26,11 +26,12 @@ Roblox's Open Cloud API can't upload plugins, so this step happens in Studio:
 ```
 Load, save, import, and share lighting profiles across your game, and with fellow developers!
 
-Release v0.1.0 - First release!
+Release v0.2.0 - Configure loader functions, casing, bindings and types. Insert loaders and presets wherever you want.
 ```
 
 ## Release history
 
 Add the description's `Release` line here each time, newest first.
 
+- `Release v0.2.0 - Configure loader functions, casing, bindings and types. Insert loaders and presets wherever you want.`
 - `Release v0.1.0 - First release!`

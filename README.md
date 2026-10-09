@@ -24,10 +24,10 @@ wally install
 
 Click **Photon** in the Plugins tab and pick a preset. The bar at the bottom acts on it:
 
-The **Insert loader** button in the header adds or updates `ReplicatedStorage.Photon.Loader` without selecting a preset.
+The **Insert loader** button in the header opens a popup. Check the functions you need, choose function casing, `const` or `local` bindings, and whether to include types. The default has only `Load`, PascalCase, `const` and types.
 
 - **Load** applies the preset to your place's Lighting. Ctrl+Z undoes it.
-- **Insert** adds the preset to `ReplicatedStorage.Photon.Presets`, with the loader module next to it, so your scripts can load it.
+- **Insert** opens a destination picker for the selected preset.
 - The icons on the right **save** your current Studio lighting as a new preset, **import** a code someone shared, and **export** the selected preset as a code, such as `PHEB...`.
 
 Each card's **•••** menu also has **Retake preview**. Your own presets add **Move to folder**, **Update from Studio** (replaces the preset with your current lighting, after asking first), **Rename** and **Delete**.
@@ -66,13 +66,15 @@ Photon saves everything a preset needs. `Lighting.Technology` is the exception: 
 
 ## Load presets from scripts
 
-**Insert** creates this:
+Loaders and preset folders can go anywhere. In either insertion popup, choose a service or select your own parent in Explorer and click **Use**. You can rename the loader and move it later. Photon does not create a folder structure or insert a loader alongside a preset.
+
+For example, you could choose this structure:
 
 ```
 ReplicatedStorage
-└── Photon
-    ├── Loader         (ModuleScript)
-    └── Presets
+└── Shared
+    ├── Lighting       (one self-contained ModuleScript)
+    └── LightingPresets
         └── Golden Hour
             ├── Ambient, Brightness, ClockTime, ...   (one value per Lighting property)
             └── child
@@ -82,23 +84,38 @@ ReplicatedStorage
 Preset folders are ordinary instances, so you can edit the values and effects in Studio. Delete a value and loading leaves that property alone.
 
 ```lua
-local Photon = require(game.ReplicatedStorage.Photon.Loader)
+local Photon = require(game.ReplicatedStorage.Shared.Lighting)
+local presets = game.ReplicatedStorage.Shared.LightingPresets
 
-Photon.load("Golden Hour")                    -- instant
-Photon.load("Night", TweenInfo.new(3))        -- tween over 3 seconds
-Photon.load("PHEBAAAA...")                    -- a share code works too
-Photon.load(workspace.SomePresetFolder)       -- or any preset folder
-
-print(Photon.list())                          -- names in the Presets folder
-local current = Photon.capture()              -- the current lighting as data
-print(Photon.encode(current))                 -- ...and as a share code
+Photon.Load(presets["Golden Hour"])             -- instant
+Photon.Load(presets.Night, TweenInfo.new(3))     -- tween over 3 seconds
+Photon.Load("PHEBAAAA...")                     -- a share code works too
+Photon.Load("Golden Hour", nil, presets)       -- name lookup in any container
 ```
+
+Only checked functions appear in the returned module. Required helpers stay private. With PascalCase, the available functions are:
+
+| Function | What it does |
+| --- | --- |
+| `Load(target, tweenInfo?, container?)` | Load a name, folder, share code or data table. |
+| `Apply(data, tweenInfo?)` | Apply a data table directly. |
+| `List(container?)` | List preset names in a container. |
+| `Capture()` | Capture current Lighting and effects as data. |
+| `Encode(data)` / `Decode(code)` | Convert between data and a PH share code. |
+| `Resolve(target, container?)` | Read a target as data without applying it. |
+| `ToFolder(data, name)` / `FromFolder(folder)` | Convert between data and editable preset folders. |
+| `Stop()` | Cancel this module's active lighting tweens. |
+| `SetPresets(container?)` | Set or clear a default container for name lookups. |
+
+For name lookups, pass a container explicitly or enable `SetPresets`. As a convenience, the loader also recognizes a child or sibling folder named `Presets`. Direct folder references, share codes and data tables need no container.
+
+`const` keeps reassigned variables `local`. Turning types off removes annotations and type declarations. Casing changes public function names, such as `ToFolder`, `toFolder`, `to_folder` or `TO_FOLDER`.
 
 Loading from a server Script changes lighting for everyone. Loading from a LocalScript changes it for that player only.
 
 When tweening, numbers and colors on Lighting and on matching effects animate. ClockTime takes the short way around midnight. Sky textures, toggles and enum values switch at the start. Effects the preset doesn't have are removed. Photon never removes anything else under Lighting, such as scripts or lights.
 
-The loader is also attached to each release as `PhotonLoader.rbxm` if you want it without the plugin.
+The default loader is also attached to each release as `PhotonLoader.rbxm`. Use the plugin popup to generate other configurations.
 
 ## Lighting codes
 
@@ -122,6 +139,8 @@ Because of the rounding, an imported preset can differ from the original by less
 ```
 
 Dev builds (any plugin file with `dev` in its name) expose `shared.PhotonDev` for testing from the command bar. `scripts/bundle.py` bundles modules into one chunk that you can paste into the command bar.
+
+`scripts/generate-loader.py` derives loader variants from `src/Loader`, using Darklua to remove types. Build and test scripts regenerate them automatically. Restart the dev watcher after changing the loader runtime or generator.
 
 [`RELEASING.md`](RELEASING.md) lists the steps for a release, including the Roblox plugin description to update each time.
 

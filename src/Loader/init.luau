@@ -2,9 +2,9 @@
 -- Photon lighting loader. MIT License, Copyright (c) 2026 Twisted Signal.
 -- https://github.com/twistedsignal/photon
 --
---   local Photon = require(game.ReplicatedStorage.Photon.Loader)
---   Photon.load("Golden Hour")                          -- a preset in the Presets folder
---   Photon.load("Golden Hour", TweenInfo.new(2))        -- tween to it over 2 seconds
+--   local Photon = require(yourLoaderModule)
+--   Photon.load("Golden Hour", nil, yourPresetContainer) -- name lookup anywhere
+--   Photon.load(somePresetFolder, TweenInfo.new(2))       -- tween over 2 seconds
 --   Photon.load("PHEB4...")                             -- a share code
 --   Photon.load(somePresetFolder)                       -- any preset folder
 --
@@ -96,13 +96,19 @@ local function transition(instance: Instance, fields: { Schema.Field }, values: 
 	end
 end
 
-local function presets(): Instance?
+local presetRoot: Instance? = nil
+
+local function presets(root: Instance?): Instance?
+	if root or presetRoot then
+		return root or presetRoot
+	end
+	local child = script:FindFirstChild("Presets")
 	local parent = script.Parent
-	return if parent then parent:FindFirstChild("Presets") else nil
+	return child or (if parent then parent:FindFirstChild("Presets") else nil)
 end
 
 -- turns a preset name, folder, share code or data table into preset data.
-function Photon.resolve(target: Target): (Data?, string?)
+function Photon.resolve(target: Target, root: Instance?): (Data?, string?)
 	if type(target) == "table" then
 		return Snapshot.clean(target), nil
 	elseif typeof(target) == "Instance" then
@@ -111,7 +117,7 @@ function Photon.resolve(target: Target): (Data?, string?)
 		end
 		return Template.fromFolder(target), nil
 	elseif type(target) == "string" then
-		local folder = presets()
+		local folder = presets(root)
 		local preset = if folder then folder:FindFirstChild(target) else nil
 		if preset and Template.isPreset(preset) then
 			return Template.fromFolder(preset), nil
@@ -125,8 +131,8 @@ function Photon.resolve(target: Target): (Data?, string?)
 end
 
 -- loads a preset. without tweenInfo it applies instantly.
-function Photon.load(target: Target, tweenInfo: TweenInfo?)
-	local data, problem = Photon.resolve(target)
+function Photon.load(target: Target, tweenInfo: TweenInfo?, root: Instance?)
+	local data, problem = Photon.resolve(target, root)
 	if data == nil then
 		error(`Photon: {problem}`, 2)
 	end
@@ -166,9 +172,9 @@ function Photon.apply(data: Data, tweenInfo: TweenInfo?)
 end
 
 -- names of the presets in the Presets folder next to this module.
-function Photon.list(): { string }
+function Photon.list(root: Instance?): { string }
 	local names = {}
-	local folder = presets()
+	local folder = presets(root)
 	if folder then
 		for _, child in folder:GetChildren() do
 			if Template.isPreset(child) then
@@ -191,6 +197,23 @@ end
 
 function Photon.decode(code: string): (Data?, string?)
 	return Codec.decode(code)
+end
+
+-- Optional APIs offered by the configurable module generator.
+function Photon.toFolder(data: Data, name: string): Folder
+	return Template.toFolder(data, name)
+end
+
+function Photon.fromFolder(folder: Instance): Data
+	return Template.fromFolder(folder)
+end
+
+function Photon.stop()
+	stop()
+end
+
+function Photon.setPresets(root: Instance?)
+	presetRoot = root
 end
 
 return Photon

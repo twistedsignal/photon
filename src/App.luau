@@ -6,6 +6,7 @@ const TabButton = require("./components/TabButton")
 const Button = require("./components/Button")
 const IconButton = require("./components/IconButton")
 const PresetDialogs = require("./components/PresetDialogs")
+const LoaderDialog = require("./components/LoaderDialog")
 const Overlay = require("./Overlay")
 const Store = require("./Store")
 const LibraryPage = require("./pages/LibraryPage")
@@ -79,7 +80,7 @@ const function App(props: Props): Frame
 		size = UDim2.fromOffset(102, 28),
 		anchorPoint = Vector2.new(1, 0.5),
 		position = UDim2.new(1, -96, 0.5, 0),
-		activated = store.updateLoader,
+		activated = function() LoaderDialog.open(store) end,
 	}).Parent = header
 
 	const tabs = new("Frame")({

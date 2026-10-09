@@ -8,6 +8,7 @@ plugins_dir="$(find_plugins_dir)"
 
 "$PROJECT_ROOT/scripts/clean.bash"
 "$PROJECT_ROOT/scripts/write-version.bash"
+python3 "$PROJECT_ROOT/scripts/generate-loader.py"
 
 echo "Building into $plugins_dir/Photon-dev.rbxm (watching for changes)"
 cd "$PROJECT_ROOT"

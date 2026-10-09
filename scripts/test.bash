@@ -9,6 +9,7 @@ selene="$(find_tool selene)"
 lune="$(find_tool lune)"
 
 "$PROJECT_ROOT/scripts/write-version.bash" >/dev/null
+python3 "$PROJECT_ROOT/scripts/generate-loader.py"
 "$selene" src
 for test in tests/*.luau; do
 	"$lune" run "$test"

@@ -9,3 +9,5 @@ __pycache__/
 
 Packages
 build
+
+/src/Generated/LoaderSources.luau

@@ -1,6 +1,6 @@
 {
     "name": "Loader",
     "tree": {
-        "$path": "src/Loader"
+        "$path": "build/DefaultLoader.luau"
     }
 }
